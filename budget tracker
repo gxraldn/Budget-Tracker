@@ -1,0 +1,358 @@
+import os
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+# ========= Original logic (minimally adapted for GUI) =========
+income = 0.0
+expenses = []  # Each item is a dict: {"category": str, "amount": float}
+
+allowed_categories = [
+    "Food", "Rent", "Transport", "Entertainment",
+    "Utilities", "Health", "Education", "Other"
+]
+_allowed_map = {c.lower(): c for c in allowed_categories}
+
+
+def add_income(amount):
+    global income
+    try:
+        val = float(amount)
+    except (TypeError, ValueError):
+        print("Invalid income. Please enter a number like 1200 or 1200.50.")
+        return False
+    if val <= 0.0:
+        print("Income must be greater than 0.")
+        return False
+    income = val
+    print("Income set to ${0:.2f}".format(income))
+    return True
+
+
+def add_expense(category, amount):
+    global expenses
+    if category is None:
+        print("Please provide a category.")
+        return False
+    key = str(category).strip().lower()
+    if key not in _allowed_map:
+        print("Invalid category. Choose from: " + ", ".join(allowed_categories))
+        return False
+    canon_cat = _allowed_map[key]
+
+    try:
+        val = float(amount)
+    except (TypeError, ValueError):
+        print("Invalid amount. Please enter a number like 12 or 12.50.")
+        return False
+    if val <= 0.0:
+        print("Amount must be greater than 0.")
+        return False
+
+    expenses.append({"category": canon_cat, "amount": val})
+    print("Expense added: {0} - ${1:.2f}".format(canon_cat, val))
+    return True
+
+
+def delete_expense(idx):
+    try:
+        i = int(idx)
+    except (TypeError, ValueError):
+        print("Please enter a numeric index.")
+        return None
+    if i < 0 or i >= len(expenses):
+        print("Index out of range.")
+        return None
+    try:
+        item = expenses.pop(i)
+        print("Deleted expense: {0} - ${1:.2f}".format(item["category"], item["amount"]))
+        return item
+    except IndexError:
+        print("Index out of range.")
+        return None
+
+
+def total_spent(expenses_list=None):
+    lst = expenses if expenses_list is None else expenses_list
+    total = 0.0
+    for entry in lst:
+        try:
+            total += float(entry.get("amount", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return total
+
+
+def compute_category_totals(expenses_list=None):
+    lst = expenses if expenses_list is None else expenses_list
+    totals = {}
+    for entry in lst:
+        try:
+            category = str(entry.get("category", "")).strip()
+            amount = float(entry.get("amount", 0.0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not category:
+            category = "Other"
+        totals[category] = totals.get(category, 0.0) + amount
+    return totals
+
+
+# Helper: return the report text (GUI-friendly) mirroring your CLI's print_report
+
+def build_report_text(income_value=None, expenses_list=None):
+    try:
+        inc = income if income_value is None else float(income_value)
+    except (TypeError, ValueError):
+        inc = income
+
+    lst = expenses if expenses_list is None else expenses_list
+    total = total_spent(lst)
+    remaining_balance = inc - total
+    category_totals = compute_category_totals(lst)
+
+    tol = 0.01
+    if total < inc - tol:
+        status = "Under budget"
+    elif abs(inc - total) <= tol:
+        status = "On track"
+    else:
+        status = "Over budget"
+
+    lines = []
+    lines.append("--- Budget Report ---")
+    lines.append("Income: ${0:.2f}".format(inc))
+    lines.append("Total Spent: ${0:.2f}".format(total))
+
+    lines.append("")
+    lines.append("Category Spending:")
+    if category_totals:
+        for category, amount in sorted(category_totals.items(), key=lambda x: (-x[1], x[0])):
+            lines.append("  - {0}: ${1:.2f}".format(category, amount))
+    else:
+        lines.append("  (no expenses)")
+
+    lines.append("-" * 27)
+    lines.append("Remaining Balance: ${0:.2f}".format(remaining_balance))
+    lines.append("Status: {0}".format(status))
+
+    return "\n".join(lines)
+
+
+def reset_data():
+    global income, expenses
+    income = 0.0
+    expenses.clear()
+    print("All budget data has been cleared.")
+    return True
+
+
+# ===================== Tkinter GUI =====================
+
+class BudgetGUI(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master)
+        self.master.title("Budget Tracker — Tkinter")
+
+        # Tk variables
+        self.income_var = tk.StringVar(value="0.00")
+        self.cat_var = tk.StringVar(value=allowed_categories[0])
+        self.amount_var = tk.StringVar()
+        self.total_var = tk.StringVar(value="$0.00")
+        self.remaining_var = tk.StringVar(value="$0.00")
+        self.status_var = tk.StringVar(value="Welcome! Set your income and start adding expenses.")
+
+        self._build_ui()
+        self._layout()
+        self._bind()
+        self._refresh_all()
+
+    def _build_ui(self):
+        # Income frame
+        self.f_income = ttk.LabelFrame(self, text="Income")
+        self.e_income = ttk.Entry(self.f_income, textvariable=self.income_var, width=14)
+        self.b_set_income = ttk.Button(self.f_income, text="Set / Update", command=self.on_set_income)
+
+        # Add expense frame
+        self.f_add = ttk.LabelFrame(self, text="Add Expense")
+        self.cb_cat = ttk.Combobox(self.f_add, textvariable=self.cat_var, values=allowed_categories, state="readonly", width=18)
+        self.e_amount = ttk.Entry(self.f_add, textvariable=self.amount_var, width=12)
+        self.b_add = ttk.Button(self.f_add, text="Add", command=self.on_add_expense)
+
+        # Table
+        self.f_table = ttk.LabelFrame(self, text="Expenses")
+        self.tree = ttk.Treeview(self.f_table, columns=("idx", "category", "amount"), show="headings", height=10)
+        self.tree.heading("idx", text="#")
+        self.tree.heading("category", text="Category")
+        self.tree.heading("amount", text="Amount")
+        self.tree.column("idx", width=40, anchor=tk.E)
+        self.tree.column("category", width=170, anchor=tk.W)
+        self.tree.column("amount", width=110, anchor=tk.E)
+        self.scroll_y = ttk.Scrollbar(self.f_table, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=self.scroll_y.set)
+        self.b_delete = ttk.Button(self.f_table, text="Delete Selected", command=self.on_delete_selected)
+
+        # Summary & actions
+        self.f_summary = ttk.LabelFrame(self, text="Summary")
+        self.l_total = ttk.Label(self.f_summary, text="Total Spent:")
+        self.v_total = ttk.Label(self.f_summary, textvariable=self.total_var)
+        self.l_remaining = ttk.Label(self.f_summary, text="Remaining:")
+        self.v_remaining = ttk.Label(self.f_summary, textvariable=self.remaining_var)
+        self.l_status = ttk.Label(self.f_summary, textvariable=self.status_var)
+
+        self.f_actions = ttk.Frame(self.f_summary)
+        self.b_report = ttk.Button(self.f_actions, text="Show Report", command=self.on_show_report)
+        self.b_reset = ttk.Button(self.f_actions, text="Reset", command=self.on_reset)
+        self.b_quit = ttk.Button(self.f_actions, text="Quit", command=self.master.destroy)
+
+    def _layout(self):
+        self.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        # Income
+        self.f_income.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(self.f_income, text="Monthly income:").grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
+        self.e_income.grid(row=0, column=1, padx=6, pady=8)
+        self.b_set_income.grid(row=0, column=2, padx=6, pady=8)
+
+        # Add
+        self.f_add.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(self.f_add, text="Category:").grid(row=0, column=0, padx=(10, 6), pady=8, sticky="w")
+        self.cb_cat.grid(row=0, column=1, padx=6, pady=8, sticky="w")
+        ttk.Label(self.f_add, text="Amount:").grid(row=0, column=2, padx=(16, 6), pady=8, sticky="w")
+        self.e_amount.grid(row=0, column=3, padx=6, pady=8, sticky="w")
+        self.b_add.grid(row=0, column=4, padx=10, pady=8)
+
+        # Table
+        self.f_table.grid(row=2, column=0, sticky="nsew")
+        self.f_table.columnconfigure(0, weight=1)
+        self.f_table.rowconfigure(0, weight=1)
+        self.tree.grid(row=0, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.scroll_y.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        self.b_delete.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+
+        # Summary
+        self.f_summary.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        for c in range(5):
+            self.f_summary.columnconfigure(c, weight=1)
+        self.l_total.grid(row=0, column=0, sticky="e", padx=(10, 4), pady=8)
+        self.v_total.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=8)
+        self.l_remaining.grid(row=0, column=2, sticky="e", padx=(10, 4), pady=8)
+        self.v_remaining.grid(row=0, column=3, sticky="w", padx=(0, 10), pady=8)
+        self.l_status.grid(row=0, column=4, sticky="e", padx=(10, 10), pady=8)
+
+        self.f_actions.grid(row=1, column=0, columnspan=5, sticky="w", padx=8, pady=(0, 10))
+        self.b_report.grid(row=0, column=0, padx=4, pady=6)
+        self.b_reset.grid(row=0, column=1, padx=4, pady=6)
+        self.b_quit.grid(row=0, column=2, padx=4, pady=6)
+
+        # Allow window growth for table
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(2, weight=1)
+
+    def _bind(self):
+        self.e_income.bind("<Return>", lambda e: self.on_set_income())
+        self.e_amount.bind("<Return>", lambda e: self.on_add_expense())
+
+    # ---------- Actions ----------
+    def on_set_income(self):
+        val = self.income_var.get().strip()
+        if add_income(val):
+            messagebox.showinfo("Income", "Income set to ${0:.2f}".format(income))
+            self._refresh_all()
+        else:
+            messagebox.showerror("Income", "Please enter a valid income greater than 0.")
+
+    def on_add_expense(self):
+        category = self.cat_var.get().strip()
+        amount = self.amount_var.get().strip()
+        if add_expense(category, amount):
+            self.amount_var.set("")
+            self._refresh_all()
+        else:
+            messagebox.showerror("Add Expense", "Invalid category or amount.\n\nCategories: {}".format(
+                ", ".join(allowed_categories)
+            ))
+
+    def on_delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Delete", "Select a row to delete.")
+            return
+        # Tree holds row index in first column
+        idx_values = [int(self.tree.item(iid, 'values')[0]) for iid in sel]
+        idx_values.sort(reverse=True)
+        for i in idx_values:
+            delete_expense(i)
+        self._refresh_all()
+
+    def on_show_report(self):
+        text = build_report_text()
+        win = tk.Toplevel(self)
+        win.title("Budget Report")
+        win.geometry("600x450")
+        txt = tk.Text(win, wrap="word")
+        txt.insert("1.0", text)
+        txt.configure(state="disabled")
+        txt.pack(fill=tk.BOTH, expand=True)
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=8)
+
+    def on_reset(self):
+        if messagebox.askyesno("Reset", "Clear income and all expenses? This cannot be undone."):
+            reset_data()
+            self.income_var.set("0.00")
+            self._refresh_all()
+
+    # ---------- UI Updates ----------
+    def _refresh_all(self):
+        self._refresh_table()
+        self._refresh_summary()
+
+    def _refresh_table(self):
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        for i, exp in enumerate(expenses):
+            try:
+                amt = float(exp.get("amount", 0.0))
+            except (TypeError, ValueError):
+                amt = 0.0
+            self.tree.insert("", tk.END, values=(i, exp.get("category", "Unknown"), "${0:.2f}".format(amt)))
+
+    def _refresh_summary(self):
+        total = total_spent()
+        remaining = income - total
+        self.total_var.set("${0:.2f}".format(total))
+        self.remaining_var.set("${0:.2f}".format(remaining))
+        tol = 0.01
+        if total < income - tol:
+            status = "Under budget"
+        elif abs(income - total) <= tol:
+            status = "On track"
+        else:
+            status = "Over budget"
+        self.status_var.set(status)
+
+
+def main():
+    # Headless guard for containers/CI
+    if not os.environ.get("DISPLAY"):
+        print("No GUI display detected (DISPLAY not set).\n"
+              "Run this on your desktop, or in a container use: xvfb-run -a python3 main.py")
+        return
+
+    root = tk.Tk()
+    try:
+        root.call("tk", "scaling", 1.2)
+    except Exception:
+        pass
+    style = ttk.Style(root)
+    if "vista" in style.theme_names():
+        style.theme_use("vista")
+    elif "clam" in style.theme_names():
+        style.theme_use("clam")
+
+    app = BudgetGUI(root)
+    root.minsize(760, 560)
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
